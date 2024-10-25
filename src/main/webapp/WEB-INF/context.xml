@@ -1,0 +1,14 @@
+<!-- <?xml version="1.0" encoding="UTF-8"?>
+<Context path="" docBase="ROOT" reloadable="true">
+    <WatchedResource>WEB-INF/web.xml</WatchedResource>
+    <Manager pathname="" />
+</Context>
+ -->
+
+<!-- <?xml version="1.0" encoding="UTF-8"?>
+<Context path="/myapp" docBase="myapp" reloadable="true">
+    <WatchedResource>WEB-INF/web.xml</WatchedResource>
+    <Manager pathname="" />
+    <Environment name="myEnvVar" value="someValue" type="java.lang.String"/>
+    <ResourceLink name="jdbc/MyDB" global="jdbc/MyDB" type="javax.sql.DataSource"/>
+</Context> -->
