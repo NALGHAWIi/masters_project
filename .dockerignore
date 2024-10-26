@@ -1,0 +1,43 @@
+# Ignore IDE-specific files and directories
+.classpath
+.project
+.settings/
+.vscode/
+
+# Ignore Git-related files and directories
+.git/
+.gitignore
+
+# Ignore Maven build output
+target/
+pom.xml.bak
+
+# Ignore Docker-specific files
+.dockerignore
+
+# Ignore Jenkins pipeline file
+Jenkinsfile
+
+# Ignore documentation files
+README.md
+
+# Ignore Ansible playbooks and inventory
+ansible/
+
+# Ignore Kubernetes manifest files
+k8s/
+
+charts/
+
+# Ignore temporary files, swap files, and logs
+*.log
+*.swp
+*.tmp
+*.bak
+
+# Ignore OS-specific hidden files
+.DS_Store
+Thumbs.db
+
+# Ignore node_modules
+node_modules/

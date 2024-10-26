@@ -1,0 +1,166 @@
+---
+- name: Setup Monitoring for Kubernetes
+  hosts: local
+  vars:
+    monitoring_namespace: k8s-monitoring
+
+  tasks:
+    - name: Include vault
+      ansible.builtin.include_vars:
+        file: secrets.yml
+      no_log: true
+
+    - name: Create monitoring namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ monitoring_namespace }}"
+
+    # - name: Download Helm installation script
+    #   ansible.builtin.get_url:
+    #     url: https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
+    #     dest: /tmp/get_helm.sh
+    #     mode: '0755'
+
+    # - name: Add /usr/local/bin to PATH
+    #   ansible.builtin.lineinfile:
+    #     path: "{{ ansible_env.HOME }}/{{ lookup('env', 'SHELL') | basename }}rc"
+    #     line: 'export PATH=$PATH:/usr/local/bin'
+
+    # - name: Reload shell configuration
+    #   ansible.builtin.shell: "source {{ ansible_env.HOME }}/{{ lookup('env', 'SHELL') | basename }}rc"
+    #   args:
+    #     executable: "{{ lookup('env', 'SHELL') }}"
+    #   changed_when: false
+
+    # - name: Run Helm installation script
+    #   ansible.builtin.command: /tmp/get_helm.sh
+    #   args:
+    #     creates: /usr/local/bin/helm
+    #   register: helm_install_result
+    #   become: true
+    - name: Download Helm command line tool
+      ansible.builtin.uri:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        return_content: true
+      register: helm_installer
+
+    - name: Install Helm
+      ansible.builtin.command:
+        cmd: bash
+        stdin: "{{ helm_installer.content }}"
+        creates: /usr/local/bin/helm
+      become: true
+      environment:
+        PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+
+    # - name: Verify Helm installation
+    #   ansible.builtin.command: helm version
+    #   become: true
+
+    - name: Add Prometheus community Helm repository
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: "https://prometheus-community.github.io/helm-charts"
+
+    - name: Add Grafana Helm repository
+      kubernetes.core.helm_repository:
+        name: grafana
+        repo_url: "https://grafana.github.io/helm-charts"
+
+    - name: Install Prometheus using Helm
+      kubernetes.core.helm:
+        name: prometheus
+        state: present
+        chart_ref: prometheus-community/prometheus
+        release_namespace: "{{ monitoring_namespace }}"
+        create_namespace: true
+        values:
+          server:
+            service:
+              type: NodePort
+        wait: true
+
+    - name: Install Grafana using Helm
+      kubernetes.core.helm:
+        name: grafana
+        state: present
+        chart_ref: grafana/grafana
+        release_namespace: "{{ monitoring_namespace }}"
+        create_namespace: true
+        values:
+          adminPassword: "{{ grafana_pass }}"
+          service:
+            type: NodePort
+        wait: true
+
+    - name: Get Grafana service details
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: "{{ monitoring_namespace }}"
+        name: grafana  # Name of the Grafana service
+      register: grafana_service
+
+    - name: Extract Grafana NodePort
+      ansible.builtin.set_fact:
+        grafana_node_port: "{{ grafana_service.resources[0].spec.ports | selectattr('port', 'equalto', 80) | map(attribute='nodePort') | first }}"
+
+    - name: Get Grafana Pods
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ monitoring_namespace }}"
+        label_selectors:
+          - app.kubernetes.io/name=grafana
+      register: grafana_pods
+
+    - name: Create Prometheus datasource in Grafana
+      community.grafana.grafana_datasource:
+        name: prometheus
+        grafana_url: "http://{{ item.status.podIP }}:3000"
+        grafana_user: "{{ grafana_user }}"
+        grafana_password: "{{ grafana_pass }}"
+        ds_type: prometheus
+        ds_url: "http://prometheus-server.{{ monitoring_namespace }}.svc.cluster.local"
+        access: proxy
+      with_items: "{{ grafana_pods.resources }}"
+      when: item.metadata.labels['app.kubernetes.io/name'] == 'grafana'
+
+    - name: Get Prometheus datasource UID from Grafana
+      ansible.builtin.uri:
+        url: "http://{{ ansible_facts.default_ipv4.address }}:{{ grafana_node_port }}/api/datasources"
+        method: GET
+        headers:
+          Authorization: "Basic {{ (grafana_user ~ ':' ~ grafana_pass) | b64encode }}"
+          Content-Type: "application/json"
+        return_content: true
+      register: grafana_datasources
+
+    - name: Set Prometheus datasource UID
+      ansible.builtin.set_fact:
+        ds_prometheus_uid: "{{ (grafana_datasources.json | selectattr('typeName', 'equalto', 'Prometheus') | map(attribute='uid') | first) }}"
+
+    - name: Copy original dashboard file
+      ansible.builtin.copy:
+        src: ../../charts/dashboards/grafana-dashboard-template.json
+        dest: ../../charts/dashboards/grafana-dashboard-modified.json
+        mode: '0644'
+
+    - name: Replace datasource UID
+      ansible.builtin.replace:
+        path: ../../charts/dashboards/grafana-dashboard-modified.json
+        regexp: '\$ds_prometheus_uid'
+        replace: '{{ ds_prometheus_uid }}'
+
+    - name: Import Grafana dashboard
+      community.grafana.grafana_dashboard:
+        grafana_url: "http://{{ item.status.podIP }}:3000"
+        grafana_user: "{{ grafana_user }}"
+        grafana_password: "{{ grafana_pass }}"
+        state: present
+        path: ../../charts/dashboards/grafana-dashboard-modified.json
+      with_items: "{{ grafana_pods.resources }}"
+      when: item.metadata.labels['app.kubernetes.io/name'] == 'grafana'

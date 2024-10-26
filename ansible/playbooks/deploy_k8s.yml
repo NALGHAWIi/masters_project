@@ -1,0 +1,143 @@
+---
+- name: Deploy to k8s
+  hosts: local
+  vars:
+    k8s_namespace: products-app
+  tasks:
+
+    - name: Check if K3s is installed
+      ansible.builtin.command: k3s --version
+      register: k3s_installed
+      ignore_errors: true
+      changed_when: false
+
+    - name: Download K3s installation script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/get-k3s.sh
+        mode: '0755'
+      when: k3s_installed.rc != 0
+      changed_when: true
+
+    - name: Install K3s
+      ansible.builtin.shell: |
+        set -o pipefail
+        /tmp/get-k3s.sh
+      when: k3s_installed.rc != 0
+      become: true
+      changed_when: true
+      register: k3s_install
+
+    - name: Set permissions for /etc/rancher/k3s/ to allow user access
+      ansible.builtin.file:
+        path: /etc/rancher/k3s/
+        mode: '0755'
+      when: ansible_env.USER != 'root'
+      become: true
+
+    - name: Configure kubectl
+      ansible.builtin.file:
+        src: /usr/local/bin/k3s
+        dest: /usr/local/bin/kubectl
+        state: link
+      become: true
+
+    - name: Display K3s version
+      ansible.builtin.debug:
+        var: k3s_installed.stdout
+
+    - name: Create .kube directory if it doesn't exist
+      ansible.builtin.file:
+        path: "{{ ansible_env.HOME }}/.kube"
+        state: directory
+        mode: '0700'
+
+    - name: Generate local kubeconfig from K3s
+      ansible.builtin.command:
+        cmd: "/usr/local/bin/k3s kubectl config view --raw"
+      register: k3s_config_raw
+      changed_when: false
+      become: true
+
+    - name: Save K3s config to ~/.kube/config
+      ansible.builtin.copy:
+        content: "{{ k3s_config_raw.stdout }}"
+        dest: "{{ ansible_env.HOME }}/.kube/config"
+        mode: '0600'
+      become: true
+
+    - name: Set ownership of kubeconfig file to the user
+      ansible.builtin.file:
+        path: "{{ ansible_env.HOME }}/.kube/config"
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+        mode: '0600'
+      become: true
+
+    - name: Add KUBECONFIG to shell configuration
+      ansible.builtin.lineinfile:
+        path: "{{ ansible_env.HOME }}/{{ lookup('env', 'SHELL') | basename }}rc"
+        line: 'export KUBECONFIG={{ ansible_env.HOME }}/.kube/config'
+        state: present
+        mode: '0600'
+        create: true
+
+    - name: Reload shell configuration
+      ansible.builtin.shell: "source {{ ansible_env.HOME }}/{{ lookup('env', 'SHELL') | basename }}rc"
+      args:
+        executable: "{{ lookup('env', 'SHELL') }}"
+      changed_when: false
+
+    - name: Add write-kubeconfig-mode to K3s service
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/system/k3s.service
+        regexp: '^ExecStart=.*'
+        line: 'ExecStart=/usr/local/bin/k3s server --write-kubeconfig-mode 644'
+        state: present
+      become: true
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+      become: true
+
+    - name: Restart K3s service
+      ansible.builtin.systemd:
+        name: k3s
+        state: restarted
+      become: true
+
+    - name: Install Kubernetes Python module
+      ansible.builtin.pip:
+        name: kubernetes
+        state: present
+        executable: pip3
+      become: true
+
+    - name: Create namespace if it doesn't exist
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ k8s_namespace }}"
+        verify_ssl: false
+        kubeconfig: "{{ ansible_env.HOME }}/.kube/config"
+      become: true
+
+    - name: Apply Kubernetes resources
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file', item.path) }}"
+        namespace: "{{ k8s_namespace }}"
+        verify_ssl: false
+        wait: true
+      loop:
+        - { name: "MySQL Secrets", path: "../../k8s/secrets/mysql-secret.yaml" }
+        - { name: "MySQL ConfigMap", path: "../../k8s/configmaps/mysql-initdb-config.yaml" }
+        - { name: "MySQL PVC", path: "../../k8s/pvc/mysql-pvc.yaml" }
+        - { name: "MySQL Deployment", path: "../../k8s/deployments/mysql.yaml" }
+        - { name: "MySQL Service", path: "../../k8s/services/mysql.yaml" }
+        - { name: "Web App Deployment", path: "../../k8s/deployments/webapp.yaml" }
+        - { name: "Web App Service", path: "../../k8s/services/webapp.yaml" }
