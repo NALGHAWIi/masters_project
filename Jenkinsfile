@@ -20,7 +20,7 @@ pipeline {
         stage('Checkout Source Code') {
             agent { label 'built-in' }
             steps {
-                git branch: 'main', url: "${env.GIT_REPO_URL}"
+                git branch: 'master', url: "${env.GIT_REPO_URL}"
             }
         }
 
